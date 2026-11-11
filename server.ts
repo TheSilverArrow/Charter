@@ -9,10 +9,22 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const port = Number(process.env.PORT) || 3000;
 
+// Permissive CORS middleware for cross-origin and iframe requests
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
+
 app.use(express.json({ limit: '10mb' }));
 
 const PRIMARY_MODEL = 'gemini-3.8-flash';
-const FALLBACK_MODEL = 'gemini-flash-latest';
+const SECONDARY_MODEL = 'gemini-3.1-flash-lite';
+const TERTIARY_MODEL = 'gemini-3.5-flash';
 
 // Helper to get GoogleGenAI client with key validation
 const getAiClient = () => {
@@ -32,13 +44,16 @@ const getAiClient = () => {
   });
 };
 
-// Helper to create a request timeout race (default 30 seconds)
+// Helper to create a request timeout race
 const withTimeout = <T>(promise: Promise<T>, ms: number = 30000, operationName: string = "Operation"): Promise<T> => {
   let timer: NodeJS.Timeout;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      reject(new Error(`${operationName} timed out after ${Math.round(ms / 1000)}s. Please check your API key and network connection.`));
+      reject(new Error(`${operationName} timed out after ${Math.round(ms / 1000)}s.`));
     }, ms);
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
   });
 
   return Promise.race([promise, timeoutPromise]).finally(() => {
@@ -46,31 +61,46 @@ const withTimeout = <T>(promise: Promise<T>, ms: number = 30000, operationName: 
   });
 };
 
-// Robust generator with automatic fallback on 503 High Demand
+// Robust generator with automatic tiered fallback on timeouts or 503 capacity spikes
 async function generateWithFallback(ai: GoogleGenAI, generateParams: any) {
+  // 1. First attempt: Primary model (gemini-3.8-flash) with a 5-second timeout to quickly catch capacity spikes
   try {
     const primaryParams = {
       ...generateParams,
       model: PRIMARY_MODEL,
+      config: generateParams.config ? { ...generateParams.config } : undefined,
     };
-    return await withTimeout(ai.models.generateContent(primaryParams), 35000, "Clinical AI analysis");
-  } catch (error: any) {
-    const errMsg = String(error?.message || error || '');
-    const isOverloaded = errMsg.includes('503') || errMsg.includes('high demand') || errMsg.includes('UNAVAILABLE') || errMsg.includes('429');
+    return await withTimeout(ai.models.generateContent(primaryParams), 5000, "Primary clinical AI model");
+  } catch (primaryErr: any) {
+    const errMsg = String(primaryErr?.message || primaryErr || '');
+    console.warn(`Primary model (${PRIMARY_MODEL}) unavailable or slow: ${errMsg.slice(0, 80)}. Falling back to ${SECONDARY_MODEL}...`);
     
-    if (isOverloaded) {
-      console.warn(`Primary model ${PRIMARY_MODEL} overloaded, attempting fallback to ${FALLBACK_MODEL}...`);
-      const fallbackParams = {
+    // 2. Second attempt: High-speed secondary model (gemini-3.1-flash-lite)
+    try {
+      const secondaryParams = {
         ...generateParams,
-        model: FALLBACK_MODEL,
+        model: SECONDARY_MODEL,
+        config: generateParams.config ? { ...generateParams.config } : undefined,
       };
-      // Remove thinkingConfig if not supported on fallback
-      if (fallbackParams.config?.thinkingConfig) {
-        delete fallbackParams.config.thinkingConfig;
+      if (secondaryParams.config?.thinkingConfig) {
+        delete secondaryParams.config.thinkingConfig;
       }
-      return await withTimeout(ai.models.generateContent(fallbackParams), 35000, "Clinical AI fallback analysis");
+      return await withTimeout(ai.models.generateContent(secondaryParams), 30000, "Secondary clinical AI model");
+    } catch (secondaryErr: any) {
+      const secMsg = String(secondaryErr?.message || secondaryErr || '');
+      console.warn(`Secondary model (${SECONDARY_MODEL}) unavailable: ${secMsg.slice(0, 80)}. Falling back to ${TERTIARY_MODEL}...`);
+      
+      // 3. Third attempt: Tertiary model (gemini-3.5-flash)
+      const tertiaryParams = {
+        ...generateParams,
+        model: TERTIARY_MODEL,
+        config: generateParams.config ? { ...generateParams.config } : undefined,
+      };
+      if (tertiaryParams.config?.thinkingConfig) {
+        delete tertiaryParams.config.thinkingConfig;
+      }
+      return await withTimeout(ai.models.generateContent(tertiaryParams), 30000, "Tertiary clinical AI model");
     }
-    throw error;
   }
 }
 
@@ -81,14 +111,26 @@ app.get('/api/status', (req, res) => {
     status: 'ok',
     hasApiKey: Boolean(apiKey),
     primaryModel: PRIMARY_MODEL,
-    fallbackModel: FALLBACK_MODEL
+    secondaryModel: SECONDARY_MODEL,
+    fallbackModel: TERTIARY_MODEL
   });
 });
 
+// GET status / info for clinical endpoints to prevent 405 Method Not Allowed when pinged or inspected
+app.get(['/api/clinical/analyze', '/api/clinical/analyze/'], (req, res) => {
+  res.json({ status: 'ok', endpoint: '/api/clinical/analyze', method: 'POST', description: 'Send POST with { noteText: string } to analyze clinical documentation.' });
+});
+app.get(['/api/clinical/summary', '/api/clinical/summary/'], (req, res) => {
+  res.json({ status: 'ok', endpoint: '/api/clinical/summary', method: 'POST', description: 'Send POST with { noteText: string } to generate clinical summaries.' });
+});
+app.get(['/api/clinical/improve-hpi', '/api/clinical/improve-hpi/'], (req, res) => {
+  res.json({ status: 'ok', endpoint: '/api/clinical/improve-hpi', method: 'POST', description: 'Send POST with { noteText: string } to polish HPI narrative flow.' });
+});
+
 // API: Clinical Note Analysis
-app.post('/api/clinical/analyze', async (req, res) => {
+app.post(['/api/clinical/analyze', '/api/clinical/analyze/'], async (req, res) => {
   try {
-    const { noteText } = req.body;
+    const { noteText } = req.body || {};
     if (!noteText || typeof noteText !== 'string' || noteText.trim().length < 10) {
       return res.status(400).json({ error: 'Clinical note text is required (minimum 10 characters).' });
     }
@@ -233,9 +275,9 @@ ${noteText}`,
 });
 
 // API: Clinical Summary (Handoff & 5-sentence SO)
-app.post('/api/clinical/summary', async (req, res) => {
+app.post(['/api/clinical/summary', '/api/clinical/summary/'], async (req, res) => {
   try {
-    const { noteText } = req.body;
+    const { noteText } = req.body || {};
     if (!noteText || typeof noteText !== 'string') {
       return res.status(400).json({ error: 'Clinical note text is required.' });
     }
@@ -293,9 +335,9 @@ Note: ${noteText}`,
 });
 
 // API: Polish HPI Narrative Flow
-app.post('/api/clinical/improve-hpi', async (req, res) => {
+app.post(['/api/clinical/improve-hpi', '/api/clinical/improve-hpi/'], async (req, res) => {
   try {
-    const { noteText } = req.body;
+    const { noteText } = req.body || {};
     if (!noteText || typeof noteText !== 'string') {
       return res.status(400).json({ error: 'Clinical note text is required.' });
     }
