@@ -1,0 +1,43 @@
+{
+  "entities": {
+    "notes": {
+      "title": "Clinical Notes",
+      "description": "User saved clinical SOAP notes",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner user ID"
+        },
+        "title": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "insights": {
+          "type": "object"
+        },
+        "summaryData": {
+          "type": "object"
+        },
+        "templateName": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
+        },
+        "patientName": {
+          "type": "string"
+        },
+        "chiefComplaint": {
+          "type": "string"
+        }
+      },
+      "required": ["userId", "content", "createdAt", "updatedAt"]
+    }
+  }
+}

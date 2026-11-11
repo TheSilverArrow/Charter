@@ -1,0 +1,8 @@
+{
+  "name": "SOAPscriber 2.0",
+  "description": "A professional AI-powered clinical documentation assistant designed to help medical professionals draft SOAP notes with real-time intelligence and physical examination guidance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,6 @@
+/* Global styles for SOAPscriber */
+@layer base {
+  body {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
