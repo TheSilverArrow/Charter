@@ -5,6 +5,7 @@ async function sendClinicalRequest<T>(endpoint: string, payload: any, actionName
   const executeAttempt = async (): Promise<Response> => {
     return await fetch(endpoint, {
       method: "POST",
+      credentials: "include",
       headers: {
         "Content-Type": "application/json",
         "Accept": "application/json",
